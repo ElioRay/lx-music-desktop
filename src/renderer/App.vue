@@ -1,5 +1,5 @@
 <template lang="pug">
-#container(v-if="isProd && !isNt" :class="theme" @mouseenter="enableIgnoreMouseEvents" @mouseleave="dieableIgnoreMouseEvents")
+#container(v-if="isProd && !isDT && !isLinux" :class="theme" @mouseenter="enableIgnoreMouseEvents" @mouseleave="dieableIgnoreMouseEvents")
   core-aside#left
   #right
     core-toolbar#toolbar
@@ -27,7 +27,7 @@ import { mapMutations, mapGetters, mapActions } from 'vuex'
 import { rendererOn, rendererSend, rendererInvoke, NAMES } from '../common/ipc'
 import { isLinux } from '../common/utils'
 import music from './utils/music'
-import { throttle, openUrl, compareVer } from './utils'
+import { throttle, openUrl, compareVer, getPlayList } from './utils'
 import { base as eventBaseName } from './event/names'
 
 window.ELECTRON_DISABLE_SECURITY_WARNINGS = process.env.ELECTRON_DISABLE_SECURITY_WARNINGS
@@ -41,7 +41,8 @@ export default {
   data() {
     return {
       isProd: process.env.NODE_ENV === 'production',
-      isNt: false,
+      isDT: false,
+      isLinux,
       globalObj: {
         apiSource: 'test',
         proxy: {},
@@ -70,23 +71,38 @@ export default {
   },
   created() {
     this.saveDefaultList = throttle(n => {
-      window.electronStore_list.set('defaultList', n)
+      rendererSend(NAMES.mainWindow.save_playlist, {
+        type: 'defaultList',
+        data: n,
+      })
     }, 500)
     this.saveLoveList = throttle(n => {
-      window.electronStore_list.set('loveList', n)
+      rendererSend(NAMES.mainWindow.save_playlist, {
+        type: 'loveList',
+        data: n,
+      })
     }, 500)
     this.saveUserList = throttle(n => {
-      window.electronStore_list.set('userList', n)
+      rendererSend(NAMES.mainWindow.save_playlist, {
+        type: 'userList',
+        data: n,
+      })
     }, 500)
     this.saveDownloadList = throttle(n => {
-      window.electronStore_list.set('downloadList', n)
+      rendererSend(NAMES.mainWindow.save_playlist, {
+        type: 'downloadList',
+        data: n,
+      })
     }, 1000)
     this.saveSearchHistoryList = throttle(n => {
-      window.electronStore_data.set('searchHistoryList', n)
+      rendererSend(NAMES.mainWindow.save_data, {
+        path: 'searchHistoryList',
+        data: n,
+      })
     }, 500)
   },
   mounted() {
-    document.body.classList.add(this.isNt ? 'noTransparent' : 'transparent')
+    document.body.classList.add(this.isDT ? 'disableTransparent' : 'transparent')
     window.eventHub.$emit(eventBaseName.bindKey)
     this.init()
   },
@@ -135,12 +151,32 @@ export default {
     'windowSizeActive.fontSize'(n) {
       document.documentElement.style.fontSize = n
     },
+    'setting.isShowAnimation': {
+      handler(n) {
+        if (n) {
+          if (document.body.classList.contains('disableAnimation')) {
+            document.body.classList.remove('disableAnimation')
+          }
+        } else {
+          if (!document.body.classList.contains('disableAnimation')) {
+            document.body.classList.add('disableAnimation')
+          }
+        }
+      },
+      immediate: true,
+    },
   },
   methods: {
     ...mapActions(['getVersionInfo']),
     ...mapMutations(['setNewVersion', 'setVersionModalVisible', 'setDownloadProgress', 'setSetting', 'setDesktopLyricConfig']),
     ...mapMutations('list', ['initList']),
     ...mapMutations('download', ['updateDownloadList']),
+    ...mapMutations('search', {
+      setSearchHistoryList: 'setHistory',
+    }),
+    ...mapMutations('player', {
+      setPlayList: 'setList',
+    }),
     init() {
       document.documentElement.style.fontSize = this.windowSizeActive.fontSize
 
@@ -218,30 +254,49 @@ export default {
       music.init()
     },
     enableIgnoreMouseEvents() {
-      if (this.isNt) return
+      if (this.isDT) return
       rendererSend(NAMES.mainWindow.set_ignore_mouse_events, false)
       // console.log('content enable')
     },
     dieableIgnoreMouseEvents() {
-      if (this.isNt) return
+      if (this.isDT) return
       // console.log('content disable')
       rendererSend(NAMES.mainWindow.set_ignore_mouse_events, true)
     },
 
     initData() { // 初始化数据
-      this.initPlayList() // 初始化播放列表
-      this.initDownloadList() // 初始化下载列表
+      this.initLocalList() // 初始化播放列表
+      // this.initDownloadList() // 初始化下载列表
+      this.initSearchHistoryList() // 初始化搜索历史列表
     },
-    initPlayList() {
-      let defaultList = window.electronStore_list.get('defaultList') || this.defaultList
-      let loveList = window.electronStore_list.get('loveList') || this.loveList
-      let userList = window.electronStore_list.get('userList') || this.userList
-      if (!defaultList.list) defaultList.list = []
-      if (!loveList.list) loveList.list = []
-      this.initList({ defaultList, loveList, userList })
+    initLocalList() {
+      getPlayList().then(({ defaultList, loveList, userList, downloadList }) => {
+        if (!defaultList) defaultList = this.defaultList
+        if (!loveList) loveList = this.loveList
+        if (userList) {
+          let needSave = false
+          const getListId = id => id.includes('.') ? getListId(id.substring(0, id.lastIndexOf('_'))) : id
+          userList.forEach(l => {
+            if (!l.id.includes('__') || l.source) return
+            let [source, id] = l.id.split('__')
+            id = getListId(id)
+            l.source = source
+            l.sourceListId = id
+            if (!needSave) needSave = true
+          })
+          if (needSave) this.saveUserList(userList)
+        } else {
+          userList = this.userList
+        }
+
+        if (!defaultList.list) defaultList.list = []
+        if (!loveList.list) loveList.list = []
+        this.initList({ defaultList, loveList, userList })
+        this.initDownloadList(downloadList) // 初始化下载列表
+        this.initPlayInfo()
+      })
     },
-    initDownloadList() {
-      let downloadList = window.electronStore_list.get('downloadList')
+    initDownloadList(downloadList) {
       if (downloadList) {
         downloadList.forEach(item => {
           if (item.status == this.downloadStatus.RUN || item.status == this.downloadStatus.WAITING) {
@@ -251,6 +306,39 @@ export default {
         })
         this.updateDownloadList(downloadList)
       }
+    },
+    initSearchHistoryList() {
+      rendererInvoke(NAMES.mainWindow.get_data, 'searchHistoryList').then(historyList => {
+        if (historyList == null) {
+          historyList = []
+          rendererSend(NAMES.mainWindow.save_data, { path: 'searchHistoryList', data: historyList })
+        } else {
+          this.setSearchHistoryList(historyList)
+        }
+      })
+    },
+    initPlayInfo() {
+      rendererInvoke(NAMES.mainWindow.get_data, 'playInfo').then(info => {
+        // console.log(info, window.allList)
+        window.restorePlayInfo = null
+        if (!info) return
+        if (info.index < 0) return
+        if (info.listId) {
+          const list = window.allList[info.listId]
+          // console.log(list)
+          if (!list) return
+          info.list = list.list
+        }
+
+        window.restorePlayInfo = info
+        this.setPlayList({
+          list: {
+            list: info.list,
+            id: info.listId,
+          },
+          index: info.index,
+        })
+      })
     },
     showUpdateModal() {
       (this.version.newVersion && this.version.newVersion.history
@@ -292,12 +380,12 @@ export default {
     },
     handleEnvParamsInit(envParams) {
       this.envParams = envParams
-      this.isNt = isLinux || this.envParams.nt
-      if (this.isNt) {
+      this.isDT = this.envParams.dt
+      if (this.isDT) {
         document.body.classList.remove('transparent')
-        document.body.classList.add('noTransparent')
+        document.body.classList.add('disableTransparent')
       }
-      if (this.isProd && !this.isNt) {
+      if (this.isProd && !this.isDT && !this.isLinux) {
         document.body.addEventListener('mouseenter', this.dieableIgnoreMouseEvents)
         document.body.addEventListener('mouseleave', this.enableIgnoreMouseEvents)
       }
@@ -354,6 +442,11 @@ body {
   box-sizing: border-box;
 }
 
+.disableAnimation * {
+  transition: none !important;
+  animation: none !important;
+}
+
 .transparent {
   padding: @shadow-app;
   #container {
@@ -362,8 +455,17 @@ body {
     background-color: transparent;
   }
 }
-.noTransparent {
+.disableTransparent {
   background-color: #fff;
+
+  #right {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+  }
+
+  #view { // 偏移5px距离解决非透明模式下右侧滚动条无法拖动的问题
+    margin-right: 5Px;
+  }
 }
 
 #container {

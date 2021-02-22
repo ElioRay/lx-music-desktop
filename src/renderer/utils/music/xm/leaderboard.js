@@ -78,7 +78,7 @@ export default {
     return arr.join('、')
   },
   filterData(rawList) {
-    console.log(rawList)
+    // console.log(rawList)
     let ids = new Set()
     const list = []
     rawList.forEach(songData => {
@@ -127,6 +127,7 @@ export default {
         songStringId: songData.songStringId,
         lrc: null,
         lrcUrl: songData.lyricInfo && songData.lyricInfo.lyricFile,
+        otherSource: null,
         types,
         _types,
         typeUrl: {},
